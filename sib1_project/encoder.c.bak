@@ -1,0 +1,155 @@
+/* encoder.c (fixed for pointer & encode API) */
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdint.h>
+#include <unistd.h>
+#include <arpa/inet.h>
+#include <sys/socket.h>
+
+#include "asn_application.h"
+#include "per_encoder.h"   /* uper_encode_to_buffer */
+#include "xer_encoder.h"   /* xer_fprint */
+
+#include "BCCH-DL-SCH-Message.h"
+#include "SIB1.h"
+
+int main(int argc, char **argv) {
+    if (argc < 3) {
+        fprintf(stderr, "Usage: %s <server-ip> <port>\n", argv[0]);
+        return 1;
+    }
+    const char *server_ip = argv[1];
+    int port = atoi(argv[2]);
+
+    /* Allocate top-level PDU */
+    BCCH_DL_SCH_Message_t *pdu = calloc(1, sizeof(BCCH_DL_SCH_Message_t));
+    if (!pdu) { perror("calloc pdu"); return 1; }
+
+    /* Allocate the c1 pointer (it is a pointer type in generated headers) */
+    pdu->message.present = BCCH_DL_SCH_MessageType_PR_c1;
+    pdu->message.choice.c1 = calloc(1, sizeof(*pdu->message.choice.c1));
+    if (!pdu->message.choice.c1) { perror("calloc c1"); ASN_STRUCT_FREE(asn_DEF_BCCH_DL_SCH_Message, pdu); return 1; }
+
+    /* Set c1 variant to carry SIB1 */
+    pdu->message.choice.c1->present = BCCH_DL_SCH_MessageType__c1_PR_systemInformationBlockType1;
+
+    /* allocate SIB1 and attach (the choice structure contains a pointer to SIB1) */
+    pdu->message.choice.c1->choice.systemInformationBlockType1 = calloc(1, sizeof(SIB1_t));
+    if (!pdu->message.choice.c1->choice.systemInformationBlockType1) {
+        perror("calloc sib1");
+        ASN_STRUCT_FREE(asn_DEF_BCCH_DL_SCH_Message, pdu);
+        return 1;
+    }
+    SIB1_t *sib1 = pdu->message.choice.c1->choice.systemInformationBlockType1;
+
+    /* =========================
+       FILL SIB1 FIELDS HERE
+       (SIB1 is complex; add required fields here)
+       ========================= */
+
+/* ===== SIB1 population block - paste here (replace the FILL comment) ===== */
+
+
+/* pointer to SIB1 inside PDU (we already allocated SIB1 earlier) */
+
+SIB1_t *sib1 = pdu->message.choice.c1->choice.systemInformationBlockType1;
+
+
+/* 1) Ensure cellSelectionInfo (pointer) exists and set q_RxLevMin */
+
+if (!sib1->cellSelectionInfo) {
+
+    sib1->cellSelectionInfo = calloc(1, sizeof(*sib1->cellSelectionInfo));
+
+    if (!sib1->cellSelectionInfo) { perror("calloc cellSelectionInfo"); ASN_STRUCT_FREE(asn_DEF_BCCH_DL_SCH_Message, pdu); return 1; }
+
+}
+
+/* Q_RxLevMin_t is a basic integer-like type in your headers — assign a sensible value (-70 dBm) */
+
+sib1->cellSelectionInfo->q_RxLevMin = -70;
+
+
+/* 2) Add one PLMN entry into cellAccessRelatedInfo.plmn_IdentityInfoList */
+
+/* Create PLMN_IdentityInfo_t and fill its plmn_Identity (OCTET STRING of 3 bytes) */
+
+PLMN_IdentityInfo_t *pinfo = calloc(1, sizeof(*pinfo));
+
+if (!pinfo) { perror("calloc pinfo"); ASN_STRUCT_FREE(asn_DEF_BCCH_DL_SCH_Message, pdu); return 1; }
+
+
+/* Example PLMN: MCC=310, MNC=260 -> commonly encoded as BCD bytes 0x13,0x02,0x60
+
+   Replace these bytes with your actual MCC/MNC if needed. */
+
+pinfo->plmn_Identity.buf = malloc(3);
+
+if (!pinfo->plmn_Identity.buf) { perror("malloc plmn"); free(pinfo); ASN_STRUCT_FREE(asn_DEF_BCCH_DL_SCH_Message, pdu); return 1; }
+
+pinfo->plmn_Identity.size = 3;
+
+pinfo->plmn_Identity.buf[0] = 0x13;
+
+pinfo->plmn_Identity.buf[1] = 0x02;
+
+pinfo->plmn_Identity.buf[2] = 0x60;
+
+
+/* Add pinfo into the embedded sequence list.
+
+   The generated PLMN_IdentityInfoList_t is an A_SEQUENCE_OF, so use its .list with ASN_SEQUENCE_ADD. */
+
+ASN_SEQUENCE_ADD(&sib1->cellAccessRelatedInfo.plmn_IdentityInfoList.list, pinfo);
+
+
+/* 3) (Optional) set minimal uac_BarringInfo.uac_BarringInfoSetList to empty default if needed
+
+   — usually not required for minimal valid SIB1, so left out here. */
+
+
+/* ===== end of SIB1 population ===== */
+
+    /* XER dump (human readable) */
+    fprintf(stderr, "\n----- XER of constructed PDU -----\n");
+    xer_fprint(stderr, &asn_DEF_BCCH_DL_SCH_Message, pdu);
+
+    /* PER (UPER) encode: note return type is asn_enc_rval_t */
+    uint8_t buffer[8192];
+    asn_enc_rval_t ec = uper_encode_to_buffer(&asn_DEF_BCCH_DL_SCH_Message, NULL, pdu, buffer, sizeof(buffer));
+    if (ec.encoded == -1) {
+        fprintf(stderr, "PER encoding failed\n");
+        ASN_STRUCT_FREE(asn_DEF_BCCH_DL_SCH_Message, pdu);
+        return 1;
+    }
+    ssize_t encoded_bits = ec.encoded; /* number of bits encoded */
+    size_t encoded_bytes = (encoded_bits + 7) / 8;
+    fprintf(stderr, "PER encoded %zu bytes (%zd bits)\n", encoded_bytes, encoded_bits);
+
+    /* TCP send: connect */
+    int sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (sock < 0) { perror("socket"); ASN_STRUCT_FREE(asn_DEF_BCCH_DL_SCH_Message, pdu); return 1; }
+    struct sockaddr_in srv = {0};
+    srv.sin_family = AF_INET;
+    srv.sin_port = htons(port);
+    if (inet_pton(AF_INET, server_ip, &srv.sin_addr) != 1) { perror("inet_pton"); close(sock); ASN_STRUCT_FREE(asn_DEF_BCCH_DL_SCH_Message, pdu); return 1; }
+
+    if (connect(sock, (struct sockaddr*)&srv, sizeof(srv)) < 0) { perror("connect"); close(sock); ASN_STRUCT_FREE(asn_DEF_BCCH_DL_SCH_Message, pdu); return 1; }
+
+    uint32_t netlen = htonl((uint32_t)encoded_bytes);
+    if (write(sock, &netlen, sizeof(netlen)) != sizeof(netlen)) { perror("write len"); close(sock); ASN_STRUCT_FREE(asn_DEF_BCCH_DL_SCH_Message, pdu); return 1; }
+
+    ssize_t sent = 0;
+    while ((size_t)sent < encoded_bytes) {
+        ssize_t w = write(sock, buffer + sent, encoded_bytes - sent);
+        if (w <= 0) { perror("write payload"); close(sock); ASN_STRUCT_FREE(asn_DEF_BCCH_DL_SCH_Message, pdu); return 1; }
+        sent += w;
+    }
+    fprintf(stderr, "Sent %zu bytes to %s:%d\n", encoded_bytes, server_ip, port);
+
+    close(sock);
+    ASN_STRUCT_FREE(asn_DEF_BCCH_DL_SCH_Message, pdu);
+    return 0;
+}
+
