@@ -1,0 +1,13 @@
+# Build artifacts
+nr_sib1/encoder
+nr_sib1/decoder
+nr_sib1/*.o
+nr_sib1/*.out
+
+# Backup files
+nr_sib1/*.bak*
+
+# IDE
+.vscode/
+.idea/
+*.swp
